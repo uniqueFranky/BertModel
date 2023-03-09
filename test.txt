@@ -1,0 +1,4 @@
+Hello! What's your name?
+Hi! My name is Franky, how about you?
+I'm Peter. Nice to meet you!
+Nice to meet you too!
