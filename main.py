@@ -80,7 +80,7 @@ def generate_batch() -> list:
 
 
 # input batch should be in shape [batch_size, seq_length],
-# mask tensor should be in shape [batch_size, seq_length, d_model]
+# mask tensor should be in shape [batch_size, seq_length, seq_length]
 def generate_attention_pad_mask(batch: torch.Tensor) -> torch.Tensor:
     mask = batch.data.eq(corpus_stoi['[PAD]']).unsqueeze(1)
     return mask.expand(-1, mask.shape[-1], -1)
@@ -97,3 +97,4 @@ batch_size = 64
 batch = generate_batch()
 token_tensor = generate_tensors(batch)
 print(token_tensor.shape)
+print(generate_attention_pad_mask(token_tensor).shape)
