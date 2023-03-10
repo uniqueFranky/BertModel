@@ -8,7 +8,7 @@ import collections
 
 tokenizer = torchtext.data.utils.get_tokenizer('spacy', language='en_core_web_sm')
 file_path = 'human_chat.txt'
-max_sentence_length = 50
+max_sentence_length = 150
 
 
 def build_vocab() -> (torchtext.vocab.vocab, int):
@@ -67,6 +67,7 @@ def random_choose_and_pad_and_mask(is_next=False) -> ([int], [int], [int]):
     return tokens, masked_positions, masked_tokens
 
 
+# generated batch is [(tokens, masked_positions, masked_tokens)]
 def generate_batch() -> list:
     batch = []
     for _ in range(int(batch_size / 2)):
@@ -85,5 +86,14 @@ def generate_attention_pad_mask(batch: torch.Tensor) -> torch.Tensor:
     return mask.expand(-1, mask.shape[-1], -1)
 
 
+# generated token_tensor is in shape [batch_size, seq_length]
+def generate_tensors(batch: list) -> torch.Tensor:
+    token_batch = [item[0] for item in batch]
+    return torch.tensor(token_batch, dtype=torch.long)
+
+
 d_model = 512
 batch_size = 64
+batch = generate_batch()
+token_tensor = generate_tensors(batch)
+print(token_tensor.shape)
