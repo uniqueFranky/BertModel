@@ -1,4 +1,5 @@
 import io
+import math
 import random
 
 import torch
@@ -90,6 +91,45 @@ def generate_attention_pad_mask(batch: torch.Tensor) -> torch.Tensor:
 def generate_tensors(batch: list) -> torch.Tensor:
     token_batch = [item[0] for item in batch]
     return torch.tensor(token_batch, dtype=torch.long)
+
+
+class AttentionHead(torch.nn.Module):
+    def __init__(self, input_size, output_size):
+        super(AttentionHead, self).__init__()
+
+        self.w_q = torch.nn.Linear(input_size, output_size)
+        self.w_k = torch.nn.Linear(input_size, output_size)
+        self.w_v = torch.nn.Linear(input_size, output_size)
+        self.scale = math.sqrt(output_size)
+
+    def forward(self, x, attention_mask):
+        q = self.w_q(x)
+        k = self.w_k(x)
+        v = self.w_v(x)
+
+        attention_weight = torch.matmul(q, k.transpose(-1, -2))
+        attention_weight /= self.scale
+        attention_weight.masked_fill(attention_mask, 1e-9)
+        score = torch.nn.Softmax(dim=-1)(attention_weight)
+        context = torch.matmul(score, v)
+        return context, attention_weight, score
+
+
+class MultiHeadAttention(torch.nn.Module):
+    def __init__(self, num_heads, embedding_size, d_model):
+        super(MultiHeadAttention, self).__init__()
+        self.num_heads = num_heads
+        self.heads = [AttentionHead(embedding_size, d_model) for _ in range(num_heads)]
+        self.linear = torch.nn.Linear(num_heads * d_model, d_model)
+
+    def forward(self, x, attention_mask):
+        contexts = [head(x, attention_mask) for head in self.heads]
+        context = contexts[0]
+        for i in range(1, self.num_heads):
+            context = torch.cat((context, contexts[i]), -1)
+        return self.linear(context)
+
+
 
 
 d_model = 512
