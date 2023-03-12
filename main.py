@@ -121,13 +121,16 @@ class MultiHeadAttention(torch.nn.Module):
         self.num_heads = num_heads
         self.heads = [AttentionHead(embedding_size, d_model) for _ in range(num_heads)]
         self.linear = torch.nn.Linear(num_heads * d_model, d_model)
+        self.norm = torch.nn.LayerNorm(d_model)
 
     def forward(self, x, attention_mask):
         contexts = [head(x, attention_mask) for head in self.heads]
         context = contexts[0]
         for i in range(1, self.num_heads):
             context = torch.cat((context, contexts[i]), -1)
-        return self.linear(context)
+        context = self.linear(context)
+        context = self.norm(context + x)
+        return context
 
 
 class BertEmbedding(torch.nn.Module):
@@ -148,6 +151,18 @@ class BertEmbedding(torch.nn.Module):
 
         embedding = self.token_embedding(x) + self.position_embedding(positions) + self.segment_embedding(segments)
         return self.norm(embedding)
+
+
+class FeedForwardNetwork(torch.nn.Module):
+    def __init__(self, d_model):
+        super(FeedForwardNetwork, self).__init__()
+
+        self.linear1 = torch.nn.Linear(d_model, d_model * 4)
+        self.relu = torch.nn.ReLU()
+        self.linear2 = torch.nn.Linear(d_model * 4, d_model)
+
+    def forward(self, x):
+        return self.linear2(self.relu(self.linear1(x)))
 
 
 
