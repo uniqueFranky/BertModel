@@ -130,6 +130,27 @@ class MultiHeadAttention(torch.nn.Module):
         return self.linear(context)
 
 
+class BertEmbedding(torch.nn.Module):
+    def __init__(self, vocab_size, embedding_size):
+        super(BertEmbedding, self).__init__()
+
+        self.token_embedding = torch.nn.Embedding(vocab_size, embedding_size)
+        self.position_embedding = torch.nn.Embedding(max_sentence_length * 2 + 2, embedding_size)
+        self.segment_embedding = torch.nn.Embedding(2, embedding_size)
+        self.norm = torch.nn.LayerNorm(embedding_size)
+
+    def forward(self, x):
+        positions = torch.arange(0, max_sentence_length * 2 + 2, dtype=torch.long)
+        positions.expand(x.shape[0], -1)
+
+        segments = torch.cat([torch.zeros(x.shape[0], max_sentence_length + 1),
+                              torch.ones(x.shape[0], max_sentence_length + 1)], dim=-1)
+
+        embedding = self.token_embedding(x) + self.position_embedding(positions) + self.segment_embedding(segments)
+        return self.norm(embedding)
+
+
+
 
 
 d_model = 512
