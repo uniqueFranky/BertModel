@@ -160,10 +160,23 @@ class FeedForwardNetwork(torch.nn.Module):
         self.linear1 = torch.nn.Linear(d_model, d_model * 4)
         self.relu = torch.nn.ReLU()
         self.linear2 = torch.nn.Linear(d_model * 4, d_model)
+        self.norm = torch.nn.LayerNorm(d_model)
 
     def forward(self, x):
-        return self.linear2(self.relu(self.linear1(x)))
+        return self.norm(self.linear2(self.relu(self.linear1(x))) + x)
 
+
+class EncoderLayer(torch.nn.Module):
+    def __init__(self, embedding_size, num_heads):
+        super(EncoderLayer, self).__init__()
+
+        self.multi_head_attention = MultiHeadAttention(num_heads, embedding_size, embedding_size)
+        self.feed_forward = FeedForwardNetwork(embedding_size)
+
+    def forward(self, x, attention_mask):
+        x = self.multi_head_attention(x, attention_mask)
+        x = self.feed_forward(x)
+        return x
 
 
 
