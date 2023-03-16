@@ -9,7 +9,7 @@ import collections
 
 tokenizer = torchtext.data.utils.get_tokenizer('spacy', language='en_core_web_sm')
 file_path = 'human_chat.txt'
-max_sentence_length = 150
+max_sentence_length = 200
 
 
 def build_vocab() -> (torchtext.vocab.vocab, int):
@@ -29,7 +29,7 @@ corpus_vocab_size = len(corpus_stoi)
 
 
 def mask(tokens: [int]) -> ([int], [int]):
-    num_mask = int(0.15 * len(tokens))
+    num_mask = min(int(0.15 * len(tokens)), 15)
     masked_positions = [i for i in range(0, len(tokens)) if tokens[i] > 3]
     random.shuffle(masked_positions)
     masked_positions = masked_positions[: num_mask]
@@ -39,6 +39,9 @@ def mask(tokens: [int]) -> ([int], [int]):
             tokens[pos] = corpus_stoi['[MASK]']
         elif random.random() < 0.5:
             tokens[pos] = random.randint(corpus_stoi['[MASK]'] + 1, corpus_vocab_size)
+    while len(masked_positions) < 15:
+        masked_positions.append(0)
+        masked_tokens.append(0)
     return masked_positions, masked_tokens
 
 
@@ -73,10 +76,10 @@ def generate_batch() -> list:
     batch = []
     for _ in range(int(batch_size / 2)):
         tokens, masked_positions, masked_tokens = random_choose_and_pad_and_mask(is_next=False)
-        batch.append((tokens, masked_positions, masked_tokens, False))
+        batch.append((tokens, masked_positions, masked_tokens, 0))
 
         tokens, masked_positions, masked_tokens = random_choose_and_pad_and_mask(is_next=True)
-        batch.append((tokens, masked_positions, masked_tokens, True))
+        batch.append((tokens, masked_positions, masked_tokens, 1))
     return batch
 
 
@@ -87,10 +90,23 @@ def generate_attention_pad_mask(batch: torch.Tensor) -> torch.Tensor:
     return mask.expand(-1, mask.shape[-1], -1)
 
 
-# generated token_tensor is in shape [batch_size, seq_length]
-def generate_tensors(batch: list) -> torch.Tensor:
+# generated tokens_tensor is in shape [batch_size, seq_length]
+# masked_positions_tensor is in shape [batch_size, num_pad]
+# masked_tokens_tensor is in shape [batch_size, num_pad]
+# cls_tensor is in shape [batch_size]
+
+def generate_tensors(batch: list) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
     token_batch = [item[0] for item in batch]
-    return torch.tensor(token_batch, dtype=torch.long)
+    tokens_tensor = torch.tensor(token_batch, dtype=torch.long)
+    position_batch = []
+    for item in batch:
+        position_batch.append(item[1])
+    masked_positions_tensor = torch.tensor(position_batch, dtype=torch.long)
+    masked_token_batch = [item[2] for item in batch]
+    masked_tokens_tensor = torch.tensor(masked_token_batch, dtype=torch.long)
+    cls_batch = [item[3] for item in batch]
+    cls_tensor = torch.tensor(cls_batch, dtype=torch.long)
+    return tokens_tensor, masked_positions_tensor, masked_tokens_tensor, cls_tensor
 
 
 class AttentionHead(torch.nn.Module):
@@ -112,7 +128,7 @@ class AttentionHead(torch.nn.Module):
         attention_weight.masked_fill(attention_mask, 1e-9)
         score = torch.nn.Softmax(dim=-1)(attention_weight)
         context = torch.matmul(score, v)
-        return context, attention_weight, score
+        return context
 
 
 class MultiHeadAttention(torch.nn.Module):
@@ -144,11 +160,10 @@ class BertEmbedding(torch.nn.Module):
 
     def forward(self, x):
         positions = torch.arange(0, max_sentence_length * 2 + 2, dtype=torch.long)
-        positions.expand(x.shape[0], -1)
+        positions = positions.expand(x.shape[0], -1)
 
-        segments = torch.cat([torch.zeros(x.shape[0], max_sentence_length + 1),
-                              torch.ones(x.shape[0], max_sentence_length + 1)], dim=-1)
-
+        segments = torch.cat([torch.zeros(x.shape[0], max_sentence_length + 1, dtype=torch.long),
+                              torch.ones(x.shape[0], max_sentence_length + 1, dtype=torch.long)], dim=-1)
         embedding = self.token_embedding(x) + self.position_embedding(positions) + self.segment_embedding(segments)
         return self.norm(embedding)
 
@@ -179,11 +194,74 @@ class EncoderLayer(torch.nn.Module):
         return x
 
 
+def gelu(x):
+    return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+
+class Bert(torch.nn.Module):
+    def __init__(self, vocab_size, embedding_size, num_heads):
+        super(Bert, self).__init__()
+
+        self.embedding = BertEmbedding(vocab_size, embedding_size)
+        self.encoder_stack = [EncoderLayer(embedding_size, num_heads) for _ in range(6)]
+        self.classifier = torch.nn.Linear(embedding_size, 2)
+        self.tanh = torch.nn.Tanh()
+        self.predictor = torch.nn.Linear(embedding_size, embedding_size)
+        self.gelu = gelu
+        self.decoder = torch.nn.Linear(embedding_size, vocab_size, bias=False)
+        self.decoder.weight = self.embedding.token_embedding.weight
+        self.decoder.bias = torch.nn.Parameter(torch.zeros(vocab_size))
+
+    def forward(self, x):
+        attention_mask = generate_attention_pad_mask(x)
+        x = self.embedding(x)
+        for encoder in self.encoder_stack:
+            x = encoder(x, attention_mask)
+
+        cls = x[:, 0, :]
+        cls.squeeze(1)
+        # now cls is in shape [batch_size, embedding_size]
+
+        cls = self.tanh(self.classifier(cls))
+        # now cls is in shape [batch_size, 2], ranging from -1 to +1
+
+        # pred is in shape [batch_size, seq_len, embedding_size]
+        pred = x
+        pred = self.decoder(self.gelu(self.predictor(pred)))
+        return cls, pred
 
 
 d_model = 512
 batch_size = 64
+model = Bert(corpus_vocab_size, d_model, 8)
+criterion = torch.nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
 batch = generate_batch()
-token_tensor = generate_tensors(batch)
-print(token_tensor.shape)
-print(generate_attention_pad_mask(token_tensor).shape)
+
+
+for epoch in range(100):
+    print(f'epoch {epoch+1} / 100')
+    checkpoint = {
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict()
+    }
+    torch.save(checkpoint, 'model.pth')
+    print('checkpoint saved')
+
+    batch = generate_batch()
+    token_tensor, masked_position_tensor, masked_token_tensor, cls_tensor = generate_tensors(batch)
+    cls_pred, masked_pred = model(token_tensor)
+    loss1 = criterion(cls_pred, cls_tensor)
+
+    # masked_pred is in shape [batch_size, seq_len, vocab_size]
+    # masked_position_tensor is in shape [batch_size, num_pad]
+    #   and needs to be converted into [batch_size, num_pad, vocab_size]
+    masked_position_tensor = masked_position_tensor[:, :, None].expand(-1, -1, corpus_vocab_size)
+    masked_pred = torch.gather(masked_pred, 1, masked_position_tensor)
+
+    loss2 = criterion(masked_pred.transpose(1, 2), masked_token_tensor)
+    loss = loss1 + loss2
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
